@@ -1,0 +1,199 @@
+# docker-compose -f farro-demo.yml -p farro-demo up
+
+version: '3.3'
+
+services:
+
+  analytics-dashboard:
+    image: faredge/analytics-dashboard:1.0.1
+    ports:
+      - 8000:8000
+    environment:
+      NAME: 'FAR-EDGE Analytics Dashboard'
+      NODE_ENV: development
+      OPEN_API_FOR_ANALYTICS_BASE_URL: http://localhost:4444/api
+      MODEL_REPOSITORY_BASE_URL: http://localhost:8888/api
+    depends_on:
+      - model-repository
+      - open-api-for-analytics
+    restart: on-failure:5
+
+  cloud-storage:
+    image: mongo:3.6.4
+    ports:
+      - 27017:27017
+    volumes:
+      - cloud-data:/data/db
+      - ./data/cloud:/docker-entrypoint-initdb.d:ro
+    restart: on-failure:5
+
+  configuration:
+    image: confluentinc/cp-zookeeper:5.0.0
+    ports:
+      - 2181:2181
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_SERVER_ID: 42
+      ZOOKEEPER_TICK_TIME: 2000
+    restart: on-failure:5
+
+  data-router-and-preprocessor:
+    image: faredge/data-router-and-preprocessor:1.0.3
+    ports:
+      - 7777:7777
+    environment:
+      NAME: 'FAR-EDGE Data Router and Preprocessor'
+      NODE_ENV: development
+      LOG_LEVEL: debug
+      API_BASE_URL: http://localhost:7777/api
+      MAX_REQUEST_BODY_SIZE: 100
+      MONGODB_HOST: edge-storage
+      MONGODB_NAME: device-registry
+      MONGODB_POOL_SIZE: 20
+      MONGODB_PORT: 27017
+      KAFKA_BROKER_HOST: streams
+      KAFKA_BROKER_PORT: 9092
+      MODEL_REPOSITORY_BASE_URL: http://model-repository:8888/api
+      EDGE_GATEWAY_MAC_ADDRESS: E5-E5-B9-5C-45-10
+      EDGE_GATEWAY_ID: befa2ec0-2e9b-4e97-ad0a-c9fe91c1b55c
+    depends_on:
+      - edge-storage
+      - messages
+      - model-repository
+      - streams
+    restart: on-failure:5
+
+  edge-analytics-engine:
+    image: faredge/edge-analytics-engine:1.0.3
+    ports:
+      - 9999:9999
+    environment:
+      NAME: 'FAR-EDGE Edge Analytics Engine'
+      NODE_ENV: development
+      LOG_LEVEL: debug
+      API_BASE_URL: http://localhost:9999/api
+      MAX_REQUEST_BODY_SIZE: 100
+      MONGODB_HOST: edge-storage
+      MONGODB_PORT: 27017
+      MONGODB_NAME: analytics-storage
+      MONGODB_POOL_SIZE: 20
+      MODEL_REPOSITORY_BASE_URL: http://model-repository:8888/api
+      DATA_ROUTER_AND_PREPROCESSOR_BASE_URL: http://data-router-and-preprocessor:7777/api
+      EDGE_GATEWAY_ID: befa2ec0-2e9b-4e97-ad0a-c9fe91c1b55c
+    volumes:
+      - ./processors:/processors:ro
+    depends_on:
+      - data-router-and-preprocessor
+      - edge-storage
+      - model-repository
+    restart: on-failure:5
+
+  edge-storage:
+    image: mongo:3.6.4
+    ports:
+      - 27018:27017
+    volumes:
+      - edge-data:/data/db
+      - ./data/edge:/docker-entrypoint-initdb.d:ro
+    restart: on-failure:5
+
+  message-echoer:
+    image: aksakalli/mqtt-client:latest
+    depends_on:
+      - messages
+    command: sub -h messages -t "#" -v
+    restart: on-failure:5
+
+  messages:
+    image: eclipse-mosquitto:latest
+    ports:
+      - 1883:1883
+      - 9001:9001
+    volumes:
+      - mosquitto-config:/mosquitto/config
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
+    restart: on-failure:5
+
+  model-repository:
+    image: faredge/model-repository:1.0.3
+    ports:
+      - 8888:8888
+    environment:
+      NAME: 'FAR-EDGE Model Repository'
+      NODE_ENV: development
+      LOG_LEVEL: debug
+      API_BASE_URL: http://localhost:8888/api
+      MAX_REQUEST_BODY_SIZE: 100
+      MONGODB_HOST: cloud-storage
+      MONGODB_PORT: 27017
+      MONGODB_NAME: model-storage
+      MONGODB_POOL_SIZE: 20
+    depends_on:
+      - cloud-storage
+    restart: on-failure:5
+
+  open-api-for-analytics:
+    image: faredge/open-api-for-analytics:1.0.3
+    ports:
+      - 4444:4444
+    environment:
+      NAME: 'FAR-EDGE Open API for Analytics'
+      NODE_ENV: development
+      LOG_LEVEL: debug
+      API_BASE_URL: http://localhost:4444/api
+      MAX_REQUEST_BODY_SIZE: 100
+      MONGODB_HOST: cloud-storage
+      MONGODB_PORT: 27017
+      MONGODB_NAME: analytics-storage
+      MONGODB_POOL_SIZE: 20
+      KAFKA_BROKER_HOST: streams
+      KAFKA_BROKER_PORT: 9092
+      MODEL_REPOSITORY_BASE_URL: http://model-repository:8888/api
+    depends_on:
+      - cloud-storage
+      - model-repository
+      - streams
+    restart: on-failure:5
+
+  random-data-publisher:
+    image: faredge/mqtt-random-data-publisher:1.0.3
+    environment:
+      NAME: 'MQTT Random Data Publisher'
+      NODE_ENV: development
+      LOG_LEVEL: debug
+      MQTT_BROKER_URL: mqtt://messages:1883
+      MQTT_TOPIC: bob/temperature
+      MIN_VALUE: 35
+      MAX_VALUE: 42
+      VALUE_INTERVAL: 10
+    depends_on:
+      - messages
+    restart: on-failure:5
+
+  streams:
+    image: confluentinc/cp-enterprise-kafka:5.0.0
+    ports:
+      - 9092:9092
+      - 29092:29092
+    environment:
+      KAFKA_BROKER_ID: 23
+      KAFKA_ZOOKEEPER_CONNECT: 'configuration:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://streams:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_BROKER_RACK: r1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_DELETE_TOPIC_ENABLE: 'true'
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_JMX_PORT: 9991
+    depends_on:
+      - configuration
+    restart: on-failure:5
+
+volumes:
+  cloud-data:
+  edge-data:
+  mosquitto-config:
+  mosquitto-data:
+  mosquitto-log:
